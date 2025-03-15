@@ -1,0 +1,31 @@
+version: '3'
+
+services:
+  ai-assistant:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "7860:7860"
+    volumes:
+      # Mount your local code to container for development
+      - ./:/app
+      # Mount a volume for data persistence (optional)
+      - ai_data:/app/data
+      # Mount a host directory for files you want to analyze
+      - ${HOST_DATA_DIR:-./host_data}:/Users/neeliyer/Projects/jarvis/data_dump
+    environment:
+      # Environment variables can be configured here
+      - PYTHONUNBUFFERED=1
+      # Model configuration
+      - MODEL_TYPE=dummy  # Options: dummy, transformers, langchain
+      - MODEL_NAME=gpt2  # Model name for transformers or LLM API
+      - MODEL_DEVICE=cpu # cpu or cuda
+      # API keys (if using LangChain with external APIs)
+      # - OPENAI_API_KEY=${OPENAI_API_KEY}
+      # - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    restart: unless-stopped
+
+volumes:
+  ai_data:
+    # This volume stores data that should persist between container restarts
