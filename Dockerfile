@@ -19,8 +19,8 @@ RUN mkdir -p /app/data/files /app/data/documents /app/data/host_files /app/data/
 COPY . .
 
 # Run a test to check PDF and DOCX libraries
-RUN python -c "try: import pypdf; print('PyPDF library installed successfully'); except ImportError: print('PyPDF library not found')" && \
-    python -c "try: import docx; print('Python-docx library installed successfully'); except ImportError: print('Python-docx library not found')"
+COPY check_libraries.py .
+RUN python check_libraries.py
 
 # Expose the port Gradio will run on
 EXPOSE 7860

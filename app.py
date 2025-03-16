@@ -1,464 +1,13 @@
-def process_document(self, filename: str, operation: str) -> str:
-        """Process a document with advanced operations like summarization"""
-        # Get document content
-        file_content = self.read_specific_file(filename)
-
-        # Extract just the content part if this comes from read_specific_file
-        if isinstance(file_content, str) and "Contents of '" in file_content:
-            parts = file_content.split("\n\n", 1)
-            if len(parts) > 1:
-                content = parts[1]
-            else:
-                content = file_content
-        else:
-            content = str(file_content)
-
-        # Process based on operation
-        if operation == "Summarize":
-            try:
-                # Try to use the model for summarization
-                if self.model:
-                    query = f"Summarize the document {filename}"
-                    prompt = self._prepare_extraction_prompt(query, filename, content)
-                    summary = self.model.generate(prompt)
-                    if summary and len(summary) > 50:
-                        return summary
-            except Exception as e:
-                print(f"Error using model for summarization: {str(e)}")
-
-            # Fall back to extractive summarization
-            return f"Summary of {filename}:\n\n" + self.doc_processor.summarize_text(content)
-
-        elif operation == "Extract Key Points":
-            try:
-                # Try to use the model for key point extraction
-                if self.model:
-                    query = f"Extract the key points from {filename}"
-                    prompt = self._prepare_extraction_prompt(query, filename, content)
-                    key_points = self.model.generate(prompt)
-                    if key_points and len(key_points) > 50:
-                        return key_points
-            except Exception as e:
-                print(f"Error using model for key point extraction: {str(e)}")
-
-            # Fall back to simulated key points
-            return self._simulate_extraction(f"Extract key points from {filename}", filename, content)
-
-        elif operation == "Extract Entities":
-            entities = self.doc_processor.extract_entities(content)
-            return self.doc_processor.format_entity_list(entities)
-
-        elif operation == "Find Statistics":
-            statistics = self.doc_processor.extract_statistics(content)
-            return self.doc_processor.format_statistics(statistics)
-
-        elif operation == "Create Timeline":
-            timeline = self.doc_processor.extract_timeline(content)
-            return self.doc_processor.format_timeline(timeline)
-
-        else:
-            return f"Unknown operation: {operation}"
-
-    def handle_large_document(self, filename: str, chunk_size: int = 2000, overlap: int = 400) -> Dict[str, Any]:
-        """Process a large document by chunking it"""
-        # Read the document
-        content = self.read_specific_file(filename)
-
-        # Extract just the content if this is from read_specific_file
-        if isinstance(content, str) and "Contents of '" in content:
-            parts = content.split("\n\n", 1)
-            if len(parts) > 1:
-                content = parts[1]
-            else:
-                content = content
-
-        # Chunk the document
-        chunks = self.doc_processor.chunk_document(content, chunk_size, overlap)
-
-        # Get file info
-        file_type = filename.split('.')[-1] if '.' in filename else 'unknown'
-
-        # Add each chunk as a separate document to the retriever
-        for i, chunk in enumerate(chunks):
-            chunk_doc = {
-                "filename": f"{filename}_chunk_{i+1}",
-                "type": file_type,
-                "content": chunk,
-                "source_document": filename,
-                "chunk_index": i+1,
-                "total_chunks": len(chunks)
-            }
-            self.retriever.add_document(chunk_doc)
-
-        return {
-            "filename": filename,
-            "chunks": len(chunks),
-            "chunk_size": chunk_size,
-            "overlap": overlap,
-            "total_length": len(content)
-        }class AIAssistant:
-    def __init__(self, data_dir: str = "data", model_type: str = "dummy"):
-        print("Initializing AI Assistant...")
-
-        # Create data directories
-        os.makedirs(data_dir, exist_ok=True)
-        os.makedirs(os.path.join(data_dir, "files"), exist_ok=True)
-        os.makedirs(os.path.join(data_dir, "documents"), exist_ok=True)
-        os.makedirs(os.path.join(data_dir, "host_files"), exist_ok=True)
-        os.makedirs(os.path.join(data_dir, "database"), exist_ok=True)
-
-        self.data_dir = data_dir
-
-        # Initialize data access components
-        self.setup_data_components(data_dir)
-
-        # Set up retrieval system
-        self.retriever = KeywordRetriever()
-        self.context_manager = RetrievalContext(self.retriever)
-
-        # Initialize the model
-        self.model_type = model_type
-        self.model_config = {
-            # Default configuration
-            "model_name": os.getenv("MODEL_NAME", "gpt2"),
-            "device": os.getenv("MODEL_DEVICE", "cpu")
-        }
-        self.model = None
-
-        # Initialize file upload handler
-        self.upload_handler = FileUploadHandler(os.path.join(data_dir, "host_files"))
-
-        # Initialize file batch processor and indexer
-        self.batch_processor = BatchProcessor(self.host_file_handler, self.host_doc_handler)
-        self.file_index = FileIndex(os.path.join(data_dir, "file_index.json"))
-        self.index_builder = FileIndexBuilder(self.file_index, self.batch_processor)
-
-        # Initialize document processor
-        self.doc_processor = DocumentProcessor()
-
-        # Flag to track if indexing is in progress
-        self.indexing_in_progress = False
-        self.indexing_progress = 0.0
-        self.indexing_thread = None    def _prepare_extraction_prompt(self, query: str, filename: str, content: str) -> str:
-        """Prepare a prompt for extracting information from a file"""
-        # Create a prompt for extracting specific information
-        prompt = "You are an AI assistant that helps with file analysis. "
-        prompt += "Extract the requested information from the file content provided.\n\n"
-
-        # Add original query
-        prompt += f"User request: {query}\n\n"
-
-        # Add file information
-        prompt += f"Filename: {filename}\n"
-
-        # Try to determine what kind of extraction is needed
-        extraction_type = "general"
-        if "summarize" in query.lower():
-            extraction_type = "summary"
-        elif "key points" in query.lower() or "main points" in query.lower():
-            extraction_type = "key_points"
-        elif "statistics" in query.lower() or "numbers" in query.lower() or "metrics" in query.lower():
-            extraction_type = "statistics"
-        elif "people" in query.lower() or "names" in query.lower() or "individuals" in query.lower():
-            extraction_type = "people"
-        elif "dates" in query.lower() or "timeline" in query.lower() or "when" in query.lower():
-            extraction_type = "dates"
-        elif "locations" in query.lower() or "places" in query.lower() or "where" in query.lower():
-            extraction_type = "locations"
-
-        # Add guidance based on extraction type
-        if extraction_type == "summary":
-            prompt += "Task: Provide a concise summary of the file contents.\n"
-        elif extraction_type == "key_points":
-            prompt += "Task: Extract the key points or main ideas from the document.\n"
-        elif extraction_type == "statistics":
-            prompt += "Task: Extract all numerical data, statistics, and metrics from the document.\n"
-        elif extraction_type == "people":
-            prompt += "Task: Identify all people and organizations mentioned in the document.\n"
-        elif extraction_type == "dates":
-            prompt += "Task: Extract all dates and create a timeline of events mentioned in the document.\n"
-        elif extraction_type == "locations":
-            prompt += "Task: Identify all locations and places mentioned in the document.\n"
-        else:
-            prompt += "Task: Extract the relevant information based on the user's request.\n"
-
-        # Add the file content, truncating if too long
-        max_content_length = 8000  # Adjust based on model's context window
-        file_content = content
-
-        if isinstance(content, str) and "Contents of '" in content:
-            # Extract just the content part if this comes from read_specific_file
-            parts = content.split("\n\n", 1)
-            if len(parts) > 1:
-                file_content = parts[1]
-
-        # Truncate if needed
-        if isinstance(file_content, str) and len(file_content) > max_content_length:
-            prompt += f"File content (truncated, showing first {max_content_length} characters):\n"
-            prompt += file_content[:max_content_length] + "...\n"
-        else:
-            prompt += "File content:\n"
-            prompt += str(file_content) + "\n"
-
-        # Add final instruction
-        prompt += "\nBased on the content above, provide the requested information in a clear, organized format."
-
-        return prompt
-
-    def _simulate_extraction(self, query: str, filename: str, content: str) -> str:
-        """Simulate extracting information from file content"""
-        file_type = filename.split('.')[-1] if '.' in filename else 'unknown'
-
-        # Extract just the content if this is from read_specific_file
-        if isinstance(content, str) and "Contents of '" in content:
-            parts = content.split("\n\n", 1)
-            if len(parts) > 1:
-                content = parts[1]
-
-        # Different responses based on query and file type
-        if "summarize" in query.lower():
-            return f"This {file_type} file contains information about {filename.split('.')[0].replace('_', ' ')}. " + \
-                   f"It's approximately {len(content) // 100} paragraphs long and discusses key concepts and applications."
-
-        elif "key points" in query.lower():
-            return "Key points from the document:\n\n" + \
-                   "1. The document discusses various applications and concepts.\n" + \
-                   "2. It contains information that can be used for reference purposes.\n" + \
-                   "3. There are multiple sections covering different aspects of the topic."
-
-        elif "statistics" in query.lower():
-            # Generate some fake statistics based on the filename
-            topic = filename.split('.')[0].replace('_', ' ')
-            return f"Statistics from {filename}:\n\n" + \
-                   f"- Total entries: {hash(filename) % 100 + 50}\n" + \
-                   f"- Growth rate: {hash(filename) % 20 + 5}%\n" + \
-                   f"- Success rate: {hash(filename) % 30 + 65}%\n" + \
-                   f"- Average value: ${hash(filename) % 1000 + 500}.00"
-
-        else:
-            # Generic extraction
-            return "Based on my analysis of the document, it contains information about " + \
-                   f"{filename.split('.')[0].replace('_', ' ')}. The document appears to be a " + \
-                   f"{file_type.upper()} file with approximately {len(content)} characters of text.\n\n" + \
-                   "The content is organized into several sections and contains relevant information " + \
-                   "that matches your query. You can view the full document using the 'read file: " + \
-                   f"{filename}' command."    def handle_file_upload(self, file_obj) -> str:
-        """Handle file upload from Gradio interface"""
-        if file_obj is None:
-            return "No file provided. Please select a file to upload."
-
-        # Save the uploaded file
-        result = self.upload_handler.save_uploaded_file(file_obj)
-
-        if result["success"]:
-            # Refresh the file index to include the new file
-            if hasattr(self, 'file_index') and hasattr(self, 'index_builder'):
-                # Just index the host_files directory to avoid reprocessing all files
-                host_dir = os.path.join(self.data_dir, "host_files")
-                self.index_builder.index_directory(host_dir)
-
-                # Add the file to the retriever
-                filename = result["file_name"]
-                file_path = result["file_path"]
-                file_type = self.file_processor.get_file_type(filename)
-
-                doc = {
-                    "id": file_path,
-                    "filename": filename,
-                    "type": file_type,
-                    "content": self._get_file_content(file_path, filename, file_type)
-                }
-
-                self.retriever.add_document(doc)
-
-                return f"File '{result['file_name']}' uploaded and indexed successfully. You can now query it."
-            else:
-                # Fall back to full refresh if index not available
-                self.refresh_file_index()
-                return f"File '{result['file_name']}' uploaded and indexed successfully."
-        else:
-            return result["message"]
-
-    def handle_multiple_uploads(self, file_list) -> str:
-        """Handle multiple file uploads from Gradio interface"""
-        if not file_list:
-            return "No files provided. Please select files to upload."
-
-        # Save the uploaded files
-        result = self.upload_handler.handle_multiple_uploads(file_list)
-        summary = self.upload_handler.get_upload_summary(result)
-
-        # Refresh the file index if any files were uploaded successfully
-        if result["success"]:
-            if hasattr(self, 'file_index') and hasattr(self, 'index_builder'):
-                # Just index the host_files directory
-                host_dir = os.path.join(self.data_dir, "host_files")
-                index_result = self.index_builder.index_directory(host_dir)
-
-                summary += f"\n\nIndexed {index_result['indexed']} new files."
-                summary += "\nFiles have been indexed and are ready for querying."
-            else:
-                # Fall back to full refresh
-                self.refresh_file_index()
-                summary += "\n\nFiles have been indexed and are ready for querying."
-
-        return summary
-
-    def search_files(self, query: str, max_results: int = 5) -> str:
-        """Search for files matching a query"""
-        if not hasattr(self, 'retriever') or not hasattr(self.retriever, 'retrieve'):
-            return "Search functionality not available."
-
-        if not query:
-            return "Please provide a search query."
-
-        # Get relevant context for the query
-        context = self.context_manager.get_context_for_query(query, max_documents=max_results)
-        relevant_docs = context.get('relevant_documents', [])
-
-        if not relevant_docs:
-            return f"No files found matching query: '{query}'"
-
-        # Format the results
-        result = f"Found {len(relevant_docs)} files matching: '{query}'\n\n"
-
-        for i, doc in enumerate(relevant_docs):
-            filename = doc.get('filename', 'Unknown')
-            doc_type = doc.get('type', 'Unknown')
-            relevance = doc.get('relevance_score', 0)
-
-            result += f"{i+1}. {filename} ({doc_type}) - Relevance: {relevance:.2f}\n"
-
-            # Add a snippet of content
-            content = doc.get('content', '')
-            if isinstance(content, str):
-                # Find relevant snippet containing the query terms
-                query_terms = query.lower().split()
-                best_snippet = self._find_relevant_snippet(content, query_terms)
-
-                if best_snippet:
-                    result += f"   Snippet: \"{best_snippet}...\"\n"
-                else:
-                    # Fall back to first 100 chars
-                    snippet = content[:100].replace('\n', ' ').strip()
-                    if len(content) > 100:
-                        snippet += "..."
-                    result += f"   Snippet: \"{snippet}\"\n"
-            elif isinstance(content, (dict, list)):
-                # For structured data, show a summary
-                result += f"   Contains structured data with {len(content)} {'items' if isinstance(content, list) else 'fields'}\n"
-
-            result += "\n"
-
-        result += "Use 'read file: filename' to view the full contents of any file."
-
-        return result
-
-    def _find_relevant_snippet(self, content: str, query_terms: List[str], context_size: int = 50) -> str:
-        """Find a snippet of content that contains query terms"""
-        if not content or not query_terms:
-            return ""
-
-        # Convert content to lowercase for case-insensitive search
-        content_lower = content.replace('\n', ' ').lower()
-
-        # Find the positions of all query terms in the content
-        term_positions = []
-        for term in query_terms:
-            pos = content_lower.find(term)
-            while pos != -1:
-                term_positions.append((pos, len(term)))
-                pos = content_lower.find(term, pos + 1)
-
-        if not term_positions:
-            return ""
-
-        # Sort positions
-        term_positions.sort()
-
-        # Find the best snippet - one that contains the most query terms in close proximity
-        best_score = 0
-        best_start = 0
-
-        for i, (pos, length) in enumerate(term_positions):
-            start = max(0, pos - context_size)
-            end = min(len(content), pos + length + context_size)
-
-            # Count how many terms are in this snippet
-            terms_in_snippet = 1  # Start with 1 for the current term
-            for j, (other_pos, other_length) in enumerate(term_positions):
-                if i != j and start <= other_pos < end:
-                    terms_in_snippet += 1
-
-            if terms_in_snippet > best_score:
-                best_score = terms_in_snippet
-                best_start = start
-
-        # Extract the snippet
-        end = min(len(content), best_start + context_size * 2)
-        snippet = content[best_start:end].replace('\n', ' ').strip()
-
-        return snippet the uploaded files
-        result = self.upload_handler.handle_multiple_uploads(file_list)
-        summary = self.upload_handler.get_upload_summary(result)
-
-        # Refresh the file index if any files were uploaded successfully
-        if result["success"]:
-            self.refresh_file_index()
-            return summary + "\n\nFiles have been indexed and are ready for querying."
-        else:
-            return summary    def setup_data_components(self, data_dir: str):
-        """Set up all data access components"""
-        # File handlers for different directories
-        self.text_handler = TextFileHandler(os.path.join(data_dir, "files"))
-        self.doc_handler = DocumentHandler(os.path.join(data_dir, "documents"))
-        self.host_file_handler = TextFileHandler(os.path.join(data_dir, "host_files"))
-        self.host_doc_handler = DocumentHandler(os.path.join(data_dir, "host_files"))
-
-        # File processor that can handle all file types
-        self.file_processor = FileProcessor(self.text_handler, self.doc_handler)
-        self.host_file_processor = FileProcessor(self.host_file_handler, self.host_doc_handler)
-
-        # Database connector - using SQLite for simplicity
-        self.db = get_database_connector("sqlite", os.path.join(data_dir, "database/assistant.db"))
-
-        # Sample data for testing
-        self._create_sample_data(data_dir)
-
-        # Index available files
-        self._index_files()
-
-    def _create_sample_data(self, data_dir: str):
-        """Create some sample data files for testing"""
-        # Sample text file
-        sample_text = "This is a sample text file that contains information about AI assistants.\n"
-        sample_text += "AI assistants can help with various tasks including answering questions, "
-        sample_text += "searching databases, and analyzing documents."
-        self.text_handler.write_text("sample_info.txt", sample_text)
-
-        # Sample JSON file
-        sample_json = {
-            "products": [
-                {"id": 1, "name": "Product A", "price": 99.99, "category": "Electronics"},
-                {"id": 2, "name": "Product B", "price": 49.99, "category": "Books"},
-                {"id": 3, "name": "Product C", "price": 149.99, "category": "Electronics"}
-            ]
-        }
-        self.text_handler.write_json("products.json", sample_json)
-
-        # Sample CSV data
-        sample_csv = [
-            {"date": "2023-01-01", "customer": "Customer A", "amount": 125.50},
-            {"date": "2023-01-02", "customer": "Customer B", "amount": 89.99},
-            {"date": "2023-01-03", "customer": "Customer A", "amount": 45.00}
-        ]
-        self.text_handler.write_csv("sales.csv", sample_csv)import gradio as gr
+"""
+Main application for AI Assistant with file access capabilities.
+"""
+import gradio as gr
 import os
 import sys
 import json
 import time
 import threading
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional, Union
 from pathlib import Path
 
 # Import our data access components
@@ -514,15 +63,25 @@ class AIAssistant:
         self.file_index = FileIndex(os.path.join(data_dir, "file_index.json"))
         self.index_builder = FileIndexBuilder(self.file_index, self.batch_processor)
 
+        # Initialize document processor
+        self.doc_processor = DocumentProcessor()
+
         # Flag to track if indexing is in progress
         self.indexing_in_progress = False
+        self.indexing_progress = 0.0
+        self.indexing_thread = None
 
     def setup_data_components(self, data_dir: str):
         """Set up all data access components"""
-        # File handlers
+        # File handlers for different directories
         self.text_handler = TextFileHandler(os.path.join(data_dir, "files"))
         self.doc_handler = DocumentHandler(os.path.join(data_dir, "documents"))
+        self.host_file_handler = TextFileHandler(os.path.join(data_dir, "host_files"))
+        self.host_doc_handler = DocumentHandler(os.path.join(data_dir, "host_files"))
+
+        # File processor that can handle all file types
         self.file_processor = FileProcessor(self.text_handler, self.doc_handler)
+        self.host_file_processor = FileProcessor(self.host_file_handler, self.host_doc_handler)
 
         # Database connector - using SQLite for simplicity
         self.db = get_database_connector("sqlite", os.path.join(data_dir, "database/assistant.db"))
@@ -752,41 +311,107 @@ class AIAssistant:
                     "status": "error",
                     "progress": 0.0,
                     "message": f"Error getting index status: {str(e)}"
-                }self.retriever.add_document(doc)
+                }
 
-        # Process and add host files to the retrieval system
-        host_docs = self.host_file_processor.process_files_in_directory()
-        for doc in host_docs:
-            self.retriever.add_document(doc)
+    def handle_large_document(self, filename: str, chunk_size: int = 2000, overlap: int = 400) -> Dict[str, Any]:
+        """Process a large document by chunking it"""
+        # Read the document
+        content = self.read_specific_file(filename)
 
-        total_docs = len(built_in_docs) + len(host_docs)
-        print(f"Indexed {total_docs} documents for retrieval")
+        # Extract just the content if this is from read_specific_file
+        if isinstance(content, str) and "Contents of '" in content:
+            parts = content.split("\n\n", 1)
+            if len(parts) > 1:
+                content = parts[1]
+            else:
+                content = content
 
-        # Print summary of indexed files by type
-        file_types = {}
-        for doc in built_in_docs + host_docs:
-            file_type = doc.get('type', 'unknown')
-            if file_type not in file_types:
-                file_types[file_type] = 0
-            file_types[file_type] += 1
+        # Chunk the document
+        chunks = self.doc_processor.chunk_document(content, chunk_size, overlap)
 
-        for file_type, count in file_types.items():
-            print(f"  - {file_type}: {count} files")
+        # Get file info
+        file_type = filename.split('.')[-1] if '.' in filename else 'unknown'
 
-    def refresh_file_index(self):
-        """Refresh the file index to include new files"""
-        # Clear existing documents from retriever
-        # Note: This is a simplified approach. In a real implementation,
-        # you might want to track document IDs and only update changed files.
-        if hasattr(self.retriever, 'documents'):
-            self.retriever.documents = []
-        if hasattr(self.retriever, 'index'):
-            self.retriever.index = {}
+        # Add each chunk as a separate document to the retriever
+        for i, chunk in enumerate(chunks):
+            chunk_doc = {
+                "filename": f"{filename}_chunk_{i+1}",
+                "type": file_type,
+                "content": chunk,
+                "source_document": filename,
+                "chunk_index": i+1,
+                "total_chunks": len(chunks)
+            }
+            self.retriever.add_document(chunk_doc)
 
-        # Re-index files
-        self._index_files()
+        return {
+            "filename": filename,
+            "chunks": len(chunks),
+            "chunk_size": chunk_size,
+            "overlap": overlap,
+            "total_length": len(content)
+        }
 
-        return f"Refreshed file index. Files are now available for querying."
+    def process_document(self, filename: str, operation: str) -> str:
+        """Process a document with advanced operations like summarization"""
+        # Get document content
+        file_content = self.read_specific_file(filename)
+
+        # Extract just the content part if this comes from read_specific_file
+        if isinstance(file_content, str) and "Contents of '" in file_content:
+            parts = file_content.split("\n\n", 1)
+            if len(parts) > 1:
+                content = parts[1]
+            else:
+                content = file_content
+        else:
+            content = str(file_content)
+
+        # Process based on operation
+        if operation == "Summarize":
+            try:
+                # Try to use the model for summarization
+                if self.model:
+                    query = f"Summarize the document {filename}"
+                    prompt = self._prepare_extraction_prompt(query, filename, content)
+                    summary = self.model.generate(prompt)
+                    if summary and len(summary) > 50:
+                        return summary
+            except Exception as e:
+                print(f"Error using model for summarization: {str(e)}")
+
+            # Fall back to extractive summarization
+            return f"Summary of {filename}:\n\n" + self.doc_processor.summarize_text(content)
+
+        elif operation == "Extract Key Points":
+            try:
+                # Try to use the model for key point extraction
+                if self.model:
+                    query = f"Extract the key points from {filename}"
+                    prompt = self._prepare_extraction_prompt(query, filename, content)
+                    key_points = self.model.generate(prompt)
+                    if key_points and len(key_points) > 50:
+                        return key_points
+            except Exception as e:
+                print(f"Error using model for key point extraction: {str(e)}")
+
+            # Fall back to simulated key points
+            return self._simulate_extraction(f"Extract key points from {filename}", filename, content)
+
+        elif operation == "Extract Entities":
+            entities = self.doc_processor.extract_entities(content)
+            return self.doc_processor.format_entity_list(entities)
+
+        elif operation == "Find Statistics":
+            statistics = self.doc_processor.extract_statistics(content)
+            return self.doc_processor.format_statistics(statistics)
+
+        elif operation == "Create Timeline":
+            timeline = self.doc_processor.extract_timeline(content)
+            return self.doc_processor.format_timeline(timeline)
+
+        else:
+            return f"Unknown operation: {operation}"
 
     def get_file_list(self):
         """Get a formatted list of available files"""
@@ -1179,6 +804,111 @@ class AIAssistant:
 
         return prompt
 
+    def _prepare_extraction_prompt(self, query: str, filename: str, content: str) -> str:
+        """Prepare a prompt for extracting information from a file"""
+        # Create a prompt for extracting specific information
+        prompt = "You are an AI assistant that helps with file analysis. "
+        prompt += "Extract the requested information from the file content provided.\n\n"
+
+        # Add original query
+        prompt += f"User request: {query}\n\n"
+
+        # Add file information
+        prompt += f"Filename: {filename}\n"
+
+        # Try to determine what kind of extraction is needed
+        extraction_type = "general"
+        if "summarize" in query.lower():
+            extraction_type = "summary"
+        elif "key points" in query.lower() or "main points" in query.lower():
+            extraction_type = "key_points"
+        elif "statistics" in query.lower() or "numbers" in query.lower() or "metrics" in query.lower():
+            extraction_type = "statistics"
+        elif "people" in query.lower() or "names" in query.lower() or "individuals" in query.lower():
+            extraction_type = "people"
+        elif "dates" in query.lower() or "timeline" in query.lower() or "when" in query.lower():
+            extraction_type = "dates"
+        elif "locations" in query.lower() or "places" in query.lower() or "where" in query.lower():
+            extraction_type = "locations"
+
+        # Add guidance based on extraction type
+        if extraction_type == "summary":
+            prompt += "Task: Provide a concise summary of the file contents.\n"
+        elif extraction_type == "key_points":
+            prompt += "Task: Extract the key points or main ideas from the document.\n"
+        elif extraction_type == "statistics":
+            prompt += "Task: Extract all numerical data, statistics, and metrics from the document.\n"
+        elif extraction_type == "people":
+            prompt += "Task: Identify all people and organizations mentioned in the document.\n"
+        elif extraction_type == "dates":
+            prompt += "Task: Extract all dates and create a timeline of events mentioned in the document.\n"
+        elif extraction_type == "locations":
+            prompt += "Task: Identify all locations and places mentioned in the document.\n"
+        else:
+            prompt += "Task: Extract the relevant information based on the user's request.\n"
+
+        # Add the file content, truncating if too long
+        max_content_length = 8000  # Adjust based on model's context window
+        file_content = content
+
+        if isinstance(content, str) and "Contents of '" in content:
+            # Extract just the content part if this comes from read_specific_file
+            parts = content.split("\n\n", 1)
+            if len(parts) > 1:
+                file_content = parts[1]
+
+        # Truncate if needed
+        if isinstance(file_content, str) and len(file_content) > max_content_length:
+            prompt += f"File content (truncated, showing first {max_content_length} characters):\n"
+            prompt += file_content[:max_content_length] + "...\n"
+        else:
+            prompt += "File content:\n"
+            prompt += str(file_content) + "\n"
+
+        # Add final instruction
+        prompt += "\nBased on the content above, provide the requested information in a clear, organized format."
+
+        return prompt
+
+    def _simulate_extraction(self, query: str, filename: str, content: str) -> str:
+        """Simulate extracting information from file content"""
+        file_type = filename.split('.')[-1] if '.' in filename else 'unknown'
+
+        # Extract just the content if this is from read_specific_file
+        if isinstance(content, str) and "Contents of '" in content:
+            parts = content.split("\n\n", 1)
+            if len(parts) > 1:
+                content = parts[1]
+
+        # Different responses based on query and file type
+        if "summarize" in query.lower():
+            return f"This {file_type} file contains information about {filename.split('.')[0].replace('_', ' ')}. " + \
+                   f"It's approximately {len(content) // 100} paragraphs long and discusses key concepts and applications."
+
+        elif "key points" in query.lower():
+            return "Key points from the document:\n\n" + \
+                   "1. The document discusses various applications and concepts.\n" + \
+                   "2. It contains information that can be used for reference purposes.\n" + \
+                   "3. There are multiple sections covering different aspects of the topic."
+
+        elif "statistics" in query.lower():
+            # Generate some fake statistics based on the filename
+            topic = filename.split('.')[0].replace('_', ' ')
+            return f"Statistics from {filename}:\n\n" + \
+                   f"- Total entries: {hash(filename) % 100 + 50}\n" + \
+                   f"- Growth rate: {hash(filename) % 20 + 5}%\n" + \
+                   f"- Success rate: {hash(filename) % 30 + 65}%\n" + \
+                   f"- Average value: ${hash(filename) % 1000 + 500}.00"
+
+        else:
+            # Generic extraction
+            return "Based on my analysis of the document, it contains information about " + \
+                   f"{filename.split('.')[0].replace('_', ' ')}. The document appears to be a " + \
+                   f"{file_type.upper()} file with approximately {len(content)} characters of text.\n\n" + \
+                   "The content is organized into several sections and contains relevant information " + \
+                   "that matches your query. You can view the full document using the 'read file: " + \
+                   f"{filename}' command."
+
     def _simulate_response(self, query: str, context: str) -> str:
         """Simulate model responses for demo purposes"""
         query_lower = query.lower()
@@ -1247,6 +977,165 @@ class AIAssistant:
         else:
             return "I don't have enough information to answer that question. " + \
                    "You can try asking about the files and data I have access to using 'list files'."
+
+    def search_files(self, query: str, max_results: int = 5) -> str:
+        """Search for files matching a query"""
+        if not hasattr(self, 'retriever') or not hasattr(self.retriever, 'retrieve'):
+            return "Search functionality not available."
+
+        if not query:
+            return "Please provide a search query."
+
+        # Get relevant context for the query
+        context = self.context_manager.get_context_for_query(query, max_documents=max_results)
+        relevant_docs = context.get('relevant_documents', [])
+
+        if not relevant_docs:
+            return f"No files found matching query: '{query}'"
+
+        # Format the results
+        result = f"Found {len(relevant_docs)} files matching: '{query}'\n\n"
+
+        for i, doc in enumerate(relevant_docs):
+            filename = doc.get('filename', 'Unknown')
+            doc_type = doc.get('type', 'Unknown')
+            relevance = doc.get('relevance_score', 0)
+
+            result += f"{i+1}. {filename} ({doc_type}) - Relevance: {relevance:.2f}\n"
+
+            # Add a snippet of content
+            content = doc.get('content', '')
+            if isinstance(content, str):
+                # Find relevant snippet containing the query terms
+                query_terms = query.lower().split()
+                best_snippet = self._find_relevant_snippet(content, query_terms)
+
+                if best_snippet:
+                    result += f"   Snippet: \"{best_snippet}...\"\n"
+                else:
+                    # Fall back to first 100 chars
+                    snippet = content[:100].replace('\n', ' ').strip()
+                    if len(content) > 100:
+                        snippet += "..."
+                    result += f"   Snippet: \"{snippet}\"\n"
+            elif isinstance(content, (dict, list)):
+                # For structured data, show a summary
+                result += f"   Contains structured data with {len(content)} {'items' if isinstance(content, list) else 'fields'}\n"
+
+            result += "\n"
+
+        result += "Use 'read file: filename' to view the full contents of any file."
+
+        return result
+
+    def _find_relevant_snippet(self, content: str, query_terms: List[str], context_size: int = 50) -> str:
+        """Find a snippet of content that contains query terms"""
+        if not content or not query_terms:
+            return ""
+
+        # Convert content to lowercase for case-insensitive search
+        content_lower = content.replace('\n', ' ').lower()
+
+        # Find the positions of all query terms in the content
+        term_positions = []
+        for term in query_terms:
+            pos = content_lower.find(term)
+            while pos != -1:
+                term_positions.append((pos, len(term)))
+                pos = content_lower.find(term, pos + 1)
+
+        if not term_positions:
+            return ""
+
+        # Sort positions
+        term_positions.sort()
+
+        # Find the best snippet - one that contains the most query terms in close proximity
+        best_score = 0
+        best_start = 0
+
+        for i, (pos, length) in enumerate(term_positions):
+            start = max(0, pos - context_size)
+            end = min(len(content), pos + length + context_size)
+
+            # Count how many terms are in this snippet
+            terms_in_snippet = 1  # Start with 1 for the current term
+            for j, (other_pos, other_length) in enumerate(term_positions):
+                if i != j and start <= other_pos < end:
+                    terms_in_snippet += 1
+
+            if terms_in_snippet > best_score:
+                best_score = terms_in_snippet
+                best_start = start
+
+        # Extract the snippet
+        end = min(len(content), best_start + context_size * 2)
+        snippet = content[best_start:end].replace('\n', ' ').strip()
+
+        return snippet
+
+    def handle_file_upload(self, file_obj) -> str:
+        """Handle file upload from Gradio interface"""
+        if file_obj is None:
+            return "No file provided. Please select a file to upload."
+
+        # Save the uploaded file
+        result = self.upload_handler.save_uploaded_file(file_obj)
+
+        if result["success"]:
+            # Refresh the file index to include the new file
+            if hasattr(self, 'file_index') and hasattr(self, 'index_builder'):
+                # Just index the host_files directory to avoid reprocessing all files
+                host_dir = os.path.join(self.data_dir, "host_files")
+                self.index_builder.index_directory(host_dir)
+
+                # Add the file to the retriever
+                filename = result["file_name"]
+                file_path = result["file_path"]
+                file_type = self.file_processor.get_file_type(filename)
+
+                doc = {
+                    "id": file_path,
+                    "filename": filename,
+                    "type": file_type,
+                    "content": self._get_file_content(file_path, filename, file_type)
+                }
+
+                self.retriever.add_document(doc)
+
+                return f"File '{result['file_name']}' uploaded and indexed successfully. You can now query it."
+            else:
+                # Fall back to full refresh if index not available
+                self.refresh_file_index()
+                return f"File '{result['file_name']}' uploaded and indexed successfully."
+        else:
+            return result["message"]
+
+    def handle_multiple_uploads(self, file_list) -> str:
+        """Handle multiple file uploads from Gradio interface"""
+        if not file_list:
+            return "No files provided. Please select files to upload."
+
+        # Save the uploaded files
+        result = self.upload_handler.handle_multiple_uploads(file_list)
+        summary = self.upload_handler.get_upload_summary(result)
+
+        # Refresh the file index if any files were uploaded successfully
+        if result["success"]:
+            if hasattr(self, 'file_index') and hasattr(self, 'index_builder'):
+                # Just index the host_files directory
+                host_dir = os.path.join(self.data_dir, "host_files")
+                index_result = self.index_builder.index_directory(host_dir)
+
+                summary += f"\n\nIndexed {index_result['indexed']} new files."
+                summary += "\nFiles have been indexed and are ready for querying."
+            else:
+                # Fall back to full refresh
+                self.refresh_file_index()
+                summary += "\n\nFiles have been indexed and are ready for querying."
+
+        return summary
+
 
 # Initialize the assistant
 assistant = AIAssistant()
@@ -1438,15 +1327,7 @@ with gr.Blocks(title="AI Assistant") as demo:
         lambda: gr.Dropdown.update(choices=get_document_list()),
         None,
         doc_selector
-    ) interactions
-    msg.submit(respond, [msg, chatbot], [msg, chatbot])
-    clear.click(lambda: None, None, chatbot, queue=False)
-    files_btn.click(list_files, None, file_status)
-    refresh_btn.click(refresh_files, None, file_status)
-
-    # Upload functionality
-    upload_btn.click(handle_file_upload, single_file, upload_status)
-    upload_multiple_btn.click(handle_multiple_uploads, multiple_files, upload_status)
+    )
 
 # Launch the app
 if __name__ == "__main__":
