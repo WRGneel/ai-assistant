@@ -12,115 +12,6 @@ from pathlib import Path
 from file_handler import TextFileHandler, DocumentHandler, FileProcessor
 from file_batch_processor import BatchProcessor
 
-class FileIndexBuilder:
-    """Builds and maintains a file index"""
-    def __init__(self,
-                 index: Optional[FileIndex] = None,
-                 processor: Optional[BatchProcessor] = None):
-        self.index = index or FileIndex()
-        self.processor = processor or BatchProcessor()
-
-    def index_directory(self, directory: str, force_update: bool = False) -> Dict[str, Any]:
-        """Index all files in a directory"""
-        start_time = time.time()
-
-        # Get all files in the directory
-        file_paths = []
-        for root, _, files in os.walk(directory):
-            for filename in files:
-                file_path = os.path.join(root, filename)
-                file_paths.append(file_path)
-
-        # Determine which files need to be indexed
-        files_to_index = []
-        for file_path in file_paths:
-            if force_update or self.index.file_needs_update(file_path):
-                files_to_index.append(file_path)
-
-        # Process files that need indexing
-        indexed_count = 0
-        error_count = 0
-        skipped_count = len(file_paths) - len(files_to_index)
-
-        if files_to_index:
-            # Create a temporary directory with symlinks to files that need indexing
-            temp_dir = "data/temp_index"
-            os.makedirs(temp_dir, exist_ok=True)
-
-            # Clear temp directory
-            for file in os.listdir(temp_dir):
-                os.remove(os.path.join(temp_dir, file))
-
-            # Create symlinks or copy files
-            for file_path in files_to_index:
-                filename = os.path.basename(file_path)
-                dest_path = os.path.join(temp_dir, filename)
-
-                try:
-                    # Try to create a symlink first
-                    try:
-                        os.symlink(file_path, dest_path)
-                    except (OSError, AttributeError):
-                        # Fallback to copy
-                        import shutil
-                        shutil.copy2(file_path, dest_path)
-                except Exception as e:
-                    print(f"Error linking file {file_path}: {str(e)}")
-                    error_count += 1
-
-            # Process the temp directory
-            def update_index(job_info):
-                if job_info["status"] == "completed" and job_info["result"]:
-                    # Get the original file path
-                    orig_filename = job_info["filename"]
-                    for file_path in files_to_index:
-                        if os.path.basename(file_path) == orig_filename:
-                            # Add to index
-                            self.index.add_file(file_path, job_info["result"])
-                            break
-
-            # Process files
-            self.processor.process_directory(temp_dir, callback=update_index)
-
-            # Count results
-            indexed_count = sum(1 for job in self.processor.jobs if job.status == "completed")
-            error_count += sum(1 for job in self.processor.jobs if job.status == "failed")
-
-        # Return summary
-        duration = time.time() - start_time
-        return {
-            "directory": directory,
-            "total_files": len(file_paths),
-            "indexed": indexed_count,
-            "errors": error_count,
-            "skipped": skipped_count,
-            "duration": duration
-        }
-
-    def update_index(self, directories: List[str], force_update: bool = False) -> Dict[str, Any]:
-        """Update the index for multiple directories"""
-        results = []
-        for directory in directories:
-            result = self.index_directory(directory, force_update)
-            results.append(result)
-
-        # Compute overall statistics
-        total_files = sum(r["total_files"] for r in results)
-        indexed = sum(r["indexed"] for r in results)
-        errors = sum(r["errors"] for r in results)
-        skipped = sum(r["skipped"] for r in results)
-        duration = sum(r["duration"] for r in results)
-
-        return {
-            "directories": len(directories),
-            "total_files": total_files,
-            "indexed": indexed,
-            "errors": errors,
-            "skipped": skipped,
-            "duration": duration,
-            "details": results
-        }
-
 class FileIndex:
     """Maintains an index of files and their content"""
     def __init__(self, index_file: str = "data/file_index.json"):
@@ -290,4 +181,114 @@ class FileIndex:
             "file_types": file_types,
             "directories": directories,
             "last_updated": last_updated_str
+        }
+
+
+class FileIndexBuilder:
+    """Builds and maintains a file index"""
+    def __init__(self,
+                 index: Optional[FileIndex] = None,
+                 processor: Optional[BatchProcessor] = None):
+        self.index = index or FileIndex()
+        self.processor = processor or BatchProcessor()
+
+    def index_directory(self, directory: str, force_update: bool = False) -> Dict[str, Any]:
+        """Index all files in a directory"""
+        start_time = time.time()
+
+        # Get all files in the directory
+        file_paths = []
+        for root, _, files in os.walk(directory):
+            for filename in files:
+                file_path = os.path.join(root, filename)
+                file_paths.append(file_path)
+
+        # Determine which files need to be indexed
+        files_to_index = []
+        for file_path in file_paths:
+            if force_update or self.index.file_needs_update(file_path):
+                files_to_index.append(file_path)
+
+        # Process files that need indexing
+        indexed_count = 0
+        error_count = 0
+        skipped_count = len(file_paths) - len(files_to_index)
+
+        if files_to_index:
+            # Create a temporary directory with symlinks to files that need indexing
+            temp_dir = "data/temp_index"
+            os.makedirs(temp_dir, exist_ok=True)
+
+            # Clear temp directory
+            for file in os.listdir(temp_dir):
+                os.remove(os.path.join(temp_dir, file))
+
+            # Create symlinks or copy files
+            for file_path in files_to_index:
+                filename = os.path.basename(file_path)
+                dest_path = os.path.join(temp_dir, filename)
+
+                try:
+                    # Try to create a symlink first
+                    try:
+                        os.symlink(file_path, dest_path)
+                    except (OSError, AttributeError):
+                        # Fallback to copy
+                        import shutil
+                        shutil.copy2(file_path, dest_path)
+                except Exception as e:
+                    print(f"Error linking file {file_path}: {str(e)}")
+                    error_count += 1
+
+            # Process the temp directory
+            def update_index(job_info):
+                if job_info["status"] == "completed" and job_info["result"]:
+                    # Get the original file path
+                    orig_filename = job_info["filename"]
+                    for file_path in files_to_index:
+                        if os.path.basename(file_path) == orig_filename:
+                            # Add to index
+                            self.index.add_file(file_path, job_info["result"])
+                            break
+
+            # Process files
+            self.processor.process_directory(temp_dir, callback=update_index)
+
+            # Count results
+            indexed_count = sum(1 for job in self.processor.jobs if job.status == "completed")
+            error_count += sum(1 for job in self.processor.jobs if job.status == "failed")
+
+        # Return summary
+        duration = time.time() - start_time
+        return {
+            "directory": directory,
+            "total_files": len(file_paths),
+            "indexed": indexed_count,
+            "errors": error_count,
+            "skipped": skipped_count,
+            "duration": duration
+        }
+
+    def update_index(self, directories: List[str], force_update: bool = False) -> Dict[str, Any]:
+        """Update the index for multiple directories"""
+        results = []
+        for directory in directories:
+            result = self.index_directory(directory, force_update)
+            results.append(result)
+
+        # Compute overall statistics
+        total_files = sum(r["total_files"] for r in results)
+        indexed = sum(r["indexed"] for r in results)
+        errors = sum(r["errors"] for r in results)
+        skipped = sum(r["skipped"] for r in results)
+        duration = sum(r["duration"] for r in results)
+
+        return {
+            "directories": len(directories),
+            "total_files": total_files,
+            "indexed": indexed,
+            "errors": errors,
+            "skipped": skipped,
+            "duration": duration,
+            "details": results
         }
